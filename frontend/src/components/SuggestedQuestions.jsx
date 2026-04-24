@@ -14,10 +14,10 @@ const QUESTIONS = [
 export default function SuggestedQuestions({ onSelect, disabled }) {
   return (
     <div className="suggestions">
-      {QUESTIONS.map((q) => (
+      {QUESTIONS.map(q => (
         <button
           key={q}
-          className="suggestion-chip"
+          className="chip"
           onClick={() => onSelect(q)}
           disabled={disabled}
         >

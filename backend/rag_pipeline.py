@@ -1,4 +1,5 @@
 import os
+import re
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 from sentence_transformers import SentenceTransformer
@@ -8,75 +9,60 @@ from dotenv import load_dotenv
 load_dotenv()
 
 COLLECTION = "aau_knowledge"
-VECTOR_SIZE = 384  # all-MiniLM-L6-v2 output dimension
+VECTOR_SIZE = 384
 
-SYSTEM_PROMPT = """You are an intelligent AI assistant for Al Ain University (AAU), UAE. Your role is to help students, applicants, and staff find accurate information about AAU.
+SYSTEM_PROMPT = """You are a helpful assistant for Al Ain University (AAU) in the UAE. Answer questions directly using the AAU information below.
 
-Use the following retrieved context to answer the question. Be helpful, accurate, and concise. Use bullet points or numbered lists when listing multiple items. Keep answers focused and clear.
+EXAMPLE of a GOOD response:
+User: What programs does AAU offer?
+Assistant: AAU offers programs across several colleges:
+- College of Engineering: Computer Science, Software Engineering, Cybersecurity, AI & Robotics
+- College of Business: BBA, MBA, DBA
+- College of Pharmacy: BSc Pharmacy, MSc Clinical Pharmacy
+Contact AAU at +800-22864 for more details.
 
-If the specific information is not in the provided context, say: "I don't have specific information about that. Please contact AAU directly at +800-22864 or visit www.aau.ac.ae for the most accurate and up-to-date details."
+EXAMPLE of a BAD response (NEVER do this):
+"Based on the provided context, AAU offers..." ← FORBIDDEN
+"According to the information, AAU has..." ← FORBIDDEN
+"The context mentions that..." ← FORBIDDEN
 
-Never fabricate or guess information. Only use what is provided in the context below.
+Rules:
+- Answer directly as if you work at AAU. Never reference any "context" or "information provided".
+- Use bullet points for lists.
+- If unsure, say: "Please contact AAU at +800-22864 or visit www.aau.ac.ae."
 
-Context:
+AAU Information:
 {context}"""
 
-SOURCE_MAP = {
-    "admission": "Admissions",
-    "apply": "Admissions",
-    "requirement": "Admissions",
-    "document": "Admissions",
-    "equivalency": "Admissions",
-    "program": "Programs & Colleges",
-    "college": "Programs & Colleges",
-    "bachelor": "Programs & Colleges",
-    "master": "Programs & Colleges",
-    "phd": "Programs & Colleges",
-    "engineering": "Programs & Colleges",
-    "pharmacy": "Programs & Colleges",
-    "business": "Programs & Colleges",
-    "nursing": "Programs & Colleges",
-    "dentistry": "Programs & Colleges",
-    "semester": "Academic Calendar",
-    "calendar": "Academic Calendar",
-    "summer": "Academic Calendar",
-    "spring": "Academic Calendar",
-    "fall": "Academic Calendar",
-    "register": "Course Registration",
-    "registration": "Course Registration",
-    "drop": "Course Registration",
-    "moodle": "Course Registration",
-    "withdrawal": "Course Registration",
-    "grade": "Grading System",
-    "gpa": "Grading System",
-    "pass": "Grading System",
-    "fail": "Grading System",
-    "tuition": "Fees",
-    "fee": "Fees",
-    "aed": "Fees",
-    "scholarship": "Scholarships",
-    "financial": "Scholarships",
-    "campus": "Campus & Facilities",
-    "facility": "Campus & Facilities",
-    "library": "Campus & Facilities",
-    "transport": "Student Services",
-    "shuttle": "Student Services",
-    "housing": "Student Services",
-    "health": "Student Services",
-    "club": "Student Services",
-    "visa": "International Students",
-    "international": "International Students",
-    "probation": "Academic Policies",
-    "attendance": "Academic Policies",
-    "absence": "Academic Policies",
-    "makeup": "Academic Policies",
-    "exam": "Academic Policies",
-    "contact": "Contact Information",
-    "phone": "Contact Information",
-    "address": "Contact Information",
-    "accreditation": "About AAU",
-    "ranking": "About AAU",
-}
+STRIP_PHRASES = [
+    "According to the provided context, ",
+    "According to the provided context,",
+    "According to the context, ",
+    "According to the context,",
+    "Based on the provided context, ",
+    "Based on the provided context,",
+    "Based on the context, ",
+    "Based on the context,",
+    "The context does not provide ",
+    "The context does not mention ",
+    "The context only mentions that ",
+    "The context only mentions ",
+    "The context mentions that ",
+    "The context mentions ",
+    "The context states that ",
+    "The context states ",
+    "The context ",
+    "The provided context does not ",
+    "The provided context mentions ",
+    "The provided context states ",
+    "The provided context ",
+    "the context does not provide ",
+    "the context does not mention ",
+    "the context only mentions ",
+    "the context mentions ",
+    "the context states ",
+    "the provided context ",
+]
 
 
 class RAGPipeline:
@@ -96,51 +82,56 @@ class RAGPipeline:
 
     def _init_collection(self):
         existing = [c.name for c in self.qdrant.get_collections().collections]
+        needs_rebuild = COLLECTION not in existing
 
-        if COLLECTION not in existing:
-            print("Creating Qdrant collection...")
+        if not needs_rebuild:
+            # Rebuild if section metadata is missing (schema upgrade)
+            sample = self.qdrant.scroll(COLLECTION, limit=1)[0]
+            if not sample or "section" not in sample[0].payload:
+                print("Upgrading collection schema — rebuilding...")
+                self.qdrant.delete_collection(COLLECTION)
+                needs_rebuild = True
+            else:
+                print(f"Qdrant ready: {self.qdrant.count(COLLECTION).count} vectors loaded")
+
+        if needs_rebuild:
             self.qdrant.create_collection(
                 collection_name=COLLECTION,
                 vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
             )
             self._index_documents()
-        else:
-            count = self.qdrant.count(COLLECTION).count
-            if count == 0:
-                print("Collection empty — indexing documents...")
-                self._index_documents()
-            else:
-                print(f"Qdrant ready: {count} vectors loaded")
 
     def _index_documents(self):
         kb_path = os.path.join(os.path.dirname(__file__), "data", "aau_knowledge_base.txt")
         with open(kb_path, "r", encoding="utf-8") as f:
             text = f.read()
 
-        chunks = self._chunk_text(text)
+        chunks, sections = self._chunk_text(text)
         print(f"Indexing {len(chunks)} chunks...")
 
         embeddings = self.encoder.encode(chunks, show_progress_bar=True).tolist()
 
         points = [
-            PointStruct(id=i, vector=emb, payload={"text": chunk})
-            for i, (chunk, emb) in enumerate(zip(chunks, embeddings))
+            PointStruct(id=i, vector=emb, payload={"text": chunk, "section": section})
+            for i, (chunk, emb, section) in enumerate(zip(chunks, embeddings, sections))
         ]
         self.qdrant.upsert(collection_name=COLLECTION, points=points)
         print("Indexing complete.")
 
-    def _chunk_text(self, text: str) -> list[str]:
-        chunks = []
-        sections = text.split("== SECTION:")
+    def _chunk_text(self, text: str):
+        chunks, section_labels = [], []
+        raw_sections = text.split("== SECTION:")
 
-        for section in sections:
-            section = section.strip()
-            if not section:
+        for raw in raw_sections:
+            raw = raw.strip()
+            if not raw:
                 continue
 
-            paragraphs = [p.strip() for p in section.split("\n\n") if p.strip()]
-            current = ""
+            lines = raw.split("\n")
+            title = lines[0].replace("==", "").strip()
+            paragraphs = [p.strip() for p in raw.split("\n\n") if p.strip()]
 
+            current = ""
             for para in paragraphs:
                 candidate = (current + "\n\n" + para).strip() if current else para
                 if len(candidate) <= 700:
@@ -148,12 +139,14 @@ class RAGPipeline:
                 else:
                     if len(current) > 50:
                         chunks.append(current)
+                        section_labels.append(title)
                     current = para
 
             if len(current) > 50:
                 chunks.append(current)
+                section_labels.append(title)
 
-        return chunks
+        return chunks, section_labels
 
     def query(self, question: str, history: list = []) -> dict:
         q_embedding = self.encoder.encode([question]).tolist()[0]
@@ -161,10 +154,11 @@ class RAGPipeline:
         results = self.qdrant.search(
             collection_name=COLLECTION,
             query_vector=q_embedding,
-            limit=5,
+            limit=6,
         )
 
         context_docs = [r.payload["text"] for r in results]
+        sections = [r.payload.get("section", "") for r in results]
         context = "\n\n---\n\n".join(context_docs)
 
         messages = [{"role": "system", "content": SYSTEM_PROMPT.format(context=context)}]
@@ -173,22 +167,34 @@ class RAGPipeline:
         messages.append({"role": "user", "content": question})
 
         response = self.groq.chat.completions.create(
-            model=os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile"),
+            model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             messages=messages,
             max_tokens=1024,
-            temperature=0.2,
+            temperature=0,
         )
 
-        answer = response.choices[0].message.content
-        sources = self._get_sources(context_docs)
+        answer = self._clean_answer(response.choices[0].message.content)
+        sources = self._get_sources(sections)
         return {"answer": answer, "sources": sources}
 
-    def _get_sources(self, docs: list[str]) -> list[str]:
-        found = set()
-        combined = " ".join(docs).lower()
-        for keyword, source in SOURCE_MAP.items():
-            if keyword in combined:
-                found.add(source)
-            if len(found) >= 3:
+    def _clean_answer(self, text: str) -> str:
+        # Nuclear option: remove any sentence that contains the word "context"
+        text = re.sub(r'[^.!?\n]*\bcontext\b[^.!?\n]*[.!?]?\s*', '', text, flags=re.IGNORECASE)
+        # Remove leftover "based on / according to" fragments
+        text = re.sub(r'(based on|according to)\s+(the\s+)?(provided\s+)?\w+[,.]?\s*', '', text, flags=re.IGNORECASE)
+        # Remove orphaned "However, it does mention that:" type fragments
+        text = re.sub(r'However,\s+it\s+does\s+mention\s+that:?\s*', '', text, flags=re.IGNORECASE)
+        text = text.strip()
+        if text and text[0].islower():
+            text = text[0].upper() + text[1:]
+        return text
+
+    def _get_sources(self, sections: list[str]) -> list[str]:
+        seen, result = set(), []
+        for s in sections:
+            if s and s not in seen:
+                seen.add(s)
+                result.append(s)
+            if len(result) >= 3:
                 break
-        return list(found)
+        return result

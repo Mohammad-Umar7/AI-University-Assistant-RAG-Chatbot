@@ -1,13 +1,11 @@
 import { useState, useCallback } from 'react'
-import Sidebar from './components/Sidebar'
 import ChatWindow from './components/ChatWindow'
 import SuggestedQuestions from './components/SuggestedQuestions'
 import { sendMessage } from './api'
 
 const WELCOME = {
   role: 'assistant',
-  content:
-    "Hello! I'm the **AAU AI Assistant** for Al Ain University. I can help you with information about programs, admissions, fees, academic calendar, campus facilities, and more.\n\nHow can I help you today?",
+  content: "Hello! I'm the **AAU AI Assistant** for Al Ain University. I can help you with programs, admissions, fees, academic calendar, campus life, and more.\n\nHow can I help you today?",
   sources: [],
 }
 
@@ -16,44 +14,37 @@ export default function App() {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [history, setHistory] = useState([])
-  const [sidebarOpen, setSidebarOpen] = useState(true)
 
-  const handleSend = useCallback(
-    async (text) => {
-      const question = (text ?? input).trim()
-      if (!question || isLoading) return
+  const handleSend = useCallback(async (text) => {
+    const q = (text ?? input).trim()
+    if (!q || isLoading) return
 
-      setInput('')
-      setMessages((prev) => [...prev, { role: 'user', content: question }])
-      setIsLoading(true)
+    setInput('')
+    setMessages(prev => [...prev, { role: 'user', content: q }])
+    setIsLoading(true)
 
-      try {
-        const result = await sendMessage(question, history)
-        setMessages((prev) => [
-          ...prev,
-          { role: 'assistant', content: result.answer, sources: result.sources },
-        ])
-        setHistory((prev) => [
-          ...prev,
-          { role: 'user', content: question },
-          { role: 'assistant', content: result.answer },
-        ])
-      } catch {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: 'assistant',
-            content:
-              "I'm having trouble connecting to the server right now. Please try again or contact AAU directly at **+800-22864**.",
-            sources: [],
-          },
-        ])
-      } finally {
-        setIsLoading(false)
-      }
-    },
-    [input, isLoading, history]
-  )
+    try {
+      const result = await sendMessage(q, history)
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: result.answer,
+        sources: result.sources,
+      }])
+      setHistory(prev => [
+        ...prev,
+        { role: 'user', content: q },
+        { role: 'assistant', content: result.answer },
+      ])
+    } catch {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: "I'm having trouble connecting right now. Please try again or contact AAU at **+800-22864**.",
+        sources: [],
+      }])
+    } finally {
+      setIsLoading(false)
+    }
+  }, [input, isLoading, history])
 
   const handleClear = () => {
     setMessages([WELCOME])
@@ -68,40 +59,24 @@ export default function App() {
     }
   }
 
-  const showSuggestions = messages.length <= 2
-
   return (
-    <div className={`app${sidebarOpen ? ' sidebar-open' : ''}`}>
-      {sidebarOpen && (
-        <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />
-      )}
+    <div className="app">
+      <div className="chat-card">
 
-      <Sidebar
-        isOpen={sidebarOpen}
-        onClose={() => setSidebarOpen(false)}
-        onTopicClick={handleSend}
-      />
-
-      <div className="main">
         <header className="header">
-          <button className="menu-btn" onClick={() => setSidebarOpen((v) => !v)}>
-            ☰
-          </button>
           <div className="header-brand">
-            <div className="header-logo-box">AAU</div>
+            <div className="header-logo">AAU</div>
             <div>
               <div className="header-title">AAU AI Assistant</div>
-              <div className="header-sub">Al Ain University — جامعة العين</div>
+              <div className="header-sub">Al Ain University · جامعة العين</div>
             </div>
           </div>
-          <button className="clear-btn" onClick={handleClear}>
-            Clear Chat
-          </button>
+          <button className="clear-btn" onClick={handleClear}>Clear chat</button>
         </header>
 
         <ChatWindow messages={messages} isLoading={isLoading} />
 
-        {showSuggestions && (
+        {messages.length <= 2 && (
           <SuggestedQuestions onSelect={handleSend} disabled={isLoading} />
         )}
 
@@ -110,7 +85,7 @@ export default function App() {
             className="input-field"
             type="text"
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={e => setInput(e.target.value)}
             onKeyDown={handleKey}
             placeholder="Ask me anything about AAU..."
             disabled={isLoading}
@@ -123,6 +98,7 @@ export default function App() {
             Send
           </button>
         </div>
+
       </div>
     </div>
   )

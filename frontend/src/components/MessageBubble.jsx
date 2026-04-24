@@ -5,18 +5,14 @@ export default function MessageBubble({ role, content, sources }) {
 
   return (
     <div className={`message ${role}`}>
-      <div className="msg-avatar">{isUser ? 'You' : 'AAU'}</div>
-      <div className="msg-body">
-        <div className="msg-bubble">
-          {isUser ? (
-            content
-          ) : (
-            <ReactMarkdown>{content}</ReactMarkdown>
-          )}
+      <div className="avatar">{isUser ? 'You' : 'AAU'}</div>
+      <div className="bubble-wrap">
+        <div className="bubble">
+          {isUser ? content : <ReactMarkdown>{content}</ReactMarkdown>}
         </div>
         {!isUser && sources && sources.length > 0 && (
-          <div className="source-tags">
-            {sources.map((s) => (
+          <div className="sources">
+            {sources.map(s => (
               <span key={s} className="source-tag">{s}</span>
             ))}
           </div>

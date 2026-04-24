@@ -3,8 +3,8 @@ import MessageBubble from './MessageBubble'
 
 function TypingIndicator() {
   return (
-    <div className="typing-row">
-      <div className="msg-avatar">AAU</div>
+    <div className="typing">
+      <div className="avatar">AAU</div>
       <div className="typing-bubble">
         <div className="dot" />
         <div className="dot" />
@@ -22,14 +22,9 @@ export default function ChatWindow({ messages, isLoading }) {
   }, [messages, isLoading])
 
   return (
-    <div className="chat-window">
+    <div className="messages">
       {messages.map((msg, i) => (
-        <MessageBubble
-          key={i}
-          role={msg.role}
-          content={msg.content}
-          sources={msg.sources}
-        />
+        <MessageBubble key={i} role={msg.role} content={msg.content} sources={msg.sources} />
       ))}
       {isLoading && <TypingIndicator />}
       <div ref={endRef} />
