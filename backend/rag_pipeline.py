@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-COLLECTION = "aau_knowledge_v2"
+COLLECTION = "aau_knowledge_v3"
 VECTOR_SIZE = 384
 
 SYSTEM_PROMPT = """You are a helpful assistant for Al Ain University (AAU) in the UAE. Answer questions directly using the AAU information below.
