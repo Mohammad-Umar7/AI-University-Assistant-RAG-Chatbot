@@ -2,13 +2,13 @@ import os
 import re
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
-COLLECTION = "aau_knowledge"
+COLLECTION = "aau_knowledge_v2"
 VECTOR_SIZE = 384
 
 SYSTEM_PROMPT = """You are a helpful assistant for Al Ain University (AAU) in the UAE. Answer questions directly using the AAU information below.
@@ -68,7 +68,7 @@ STRIP_PHRASES = [
 class RAGPipeline:
     def __init__(self):
         print("Loading embedding model...")
-        self.encoder = SentenceTransformer("all-MiniLM-L6-v2")
+        self.encoder = TextEmbedding("BAAI/bge-small-en-v1.5")
 
         print("Connecting to Qdrant Cloud...")
         self.qdrant = QdrantClient(
@@ -109,7 +109,7 @@ class RAGPipeline:
         chunks, sections = self._chunk_text(text)
         print(f"Indexing {len(chunks)} chunks...")
 
-        embeddings = self.encoder.encode(chunks, show_progress_bar=True).tolist()
+        embeddings = [e.tolist() for e in self.encoder.embed(chunks)]
 
         points = [
             PointStruct(id=i, vector=emb, payload={"text": chunk, "section": section})
@@ -149,7 +149,7 @@ class RAGPipeline:
         return chunks, section_labels
 
     def query(self, question: str, history: list = []) -> dict:
-        q_embedding = self.encoder.encode([question]).tolist()[0]
+        q_embedding = list(self.encoder.embed([question]))[0].tolist()
 
         results = self.qdrant.search(
             collection_name=COLLECTION,
