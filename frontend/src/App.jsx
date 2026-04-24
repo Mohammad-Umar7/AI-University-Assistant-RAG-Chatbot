@@ -35,10 +35,13 @@ export default function App() {
         { role: 'user', content: q },
         { role: 'assistant', content: result.answer },
       ])
-    } catch {
+    } catch (err) {
+      const is503 = err?.message?.includes('503') || false
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: "I'm having trouble connecting right now. Please try again or contact AAU at **+800-22864**.",
+        content: is503
+          ? "I'm still warming up — please wait a moment and try again."
+          : "I'm having trouble connecting right now. Please try again or contact AAU at **+800-22864**.",
         sources: [],
       }])
     } finally {

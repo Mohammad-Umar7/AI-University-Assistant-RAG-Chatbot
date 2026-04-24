@@ -6,6 +6,6 @@ export async function sendMessage(message, history) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, history }),
   })
-  if (!response.ok) throw new Error('Request failed')
+  if (!response.ok) throw new Error(`${response.status}`)
   return response.json()
 }
