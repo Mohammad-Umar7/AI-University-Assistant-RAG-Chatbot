@@ -1,28 +1,13 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from rag_pipeline import RAGPipeline
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-rag: RAGPipeline | None = None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global rag
-    logger.info("Starting up — loading RAG pipeline...")
-    rag = RAGPipeline()
-    yield
-    logger.info("Shutting down.")
-
-
-app = FastAPI(title="AAU AI Assistant API", lifespan=lifespan)
+app = FastAPI(title="AAU AI Assistant API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -31,6 +16,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+rag = None
+is_ready = False
+
+
+def _load_pipeline():
+    global rag, is_ready
+    from rag_pipeline import RAGPipeline
+    rag = RAGPipeline()
+    is_ready = True
+    logger.info("RAG pipeline ready.")
+
+
+@app.on_event("startup")
+async def startup():
+    # Load pipeline in background so port binds immediately
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, _load_pipeline)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ready" if is_ready else "loading"}
 
 
 class Message(BaseModel):
@@ -48,15 +56,10 @@ class ChatResponse(BaseModel):
     sources: list[str]
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok", "service": "AAU AI Assistant"}
-
-
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
-    if not rag:
-        raise HTTPException(status_code=503, detail="RAG pipeline not ready")
+    if not is_ready:
+        raise HTTPException(status_code=503, detail="Still loading, please wait a moment.")
     try:
         history_dicts = [msg.model_dump() for msg in request.history]
         result = rag.query(request.message, history_dicts)
