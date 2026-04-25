@@ -2,7 +2,7 @@ import asyncio
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,14 +19,20 @@ app.add_middleware(
 
 rag = None
 is_ready = False
+load_error = None
 
 
 def _load_pipeline():
-    global rag, is_ready
-    from rag_pipeline import RAGPipeline
-    rag = RAGPipeline()
-    is_ready = True
-    logger.info("RAG pipeline ready.")
+    global rag, is_ready, load_error
+    try:
+        from rag_pipeline import RAGPipeline
+        rag = RAGPipeline()
+        is_ready = True
+        load_error = None
+        logger.info("RAG pipeline ready.")
+    except Exception as e:
+        load_error = str(e)
+        logger.exception("Failed to load RAG pipeline.")
 
 
 @app.on_event("startup")
@@ -38,6 +44,8 @@ async def startup():
 
 @app.get("/health")
 def health():
+    if load_error:
+        return {"status": "error", "detail": load_error}
     return {"status": "ready" if is_ready else "loading"}
 
 
@@ -48,7 +56,7 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
-    history: list[Message] = []
+    history: list[Message] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):
@@ -58,6 +66,8 @@ class ChatResponse(BaseModel):
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
+    if load_error:
+        raise HTTPException(status_code=500, detail="Assistant failed to initialize.")
     if not is_ready:
         raise HTTPException(status_code=503, detail="Still loading, please wait a moment.")
     try:

@@ -15,5 +15,9 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      - key: RAG_RETRIEVAL_LIMIT
+        value: "3"
+      - key: RAG_SCORE_THRESHOLD
+        value: "0.35"
       - key: PYTHON_VERSION
         value: 3.11.0

@@ -1,7 +1,7 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import ChatWindow from './components/ChatWindow'
 import SuggestedQuestions from './components/SuggestedQuestions'
-import { sendMessage } from './api'
+import { getHealth, sendMessage } from './api'
 
 const WELCOME = {
   role: 'assistant',
@@ -14,6 +14,10 @@ export default function App() {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [history, setHistory] = useState([])
+
+  useEffect(() => {
+    getHealth().catch(() => {})
+  }, [])
 
   const handleSend = useCallback(async (text) => {
     const q = (text ?? input).trim()
@@ -36,11 +40,11 @@ export default function App() {
         { role: 'assistant', content: result.answer },
       ])
     } catch (err) {
-      const is503 = err?.message?.includes('503') || false
+      const isWarming = err?.status === 503 || err?.message?.toLowerCase().includes('warming')
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: is503
-          ? "I'm still warming up — please wait a moment and try again."
+        content: isWarming
+          ? "I'm still warming up. Please wait a moment and send your question again."
           : "I'm having trouble connecting right now. Please try again or contact AAU at **+800-22864**.",
         sources: [],
       }])
@@ -71,7 +75,7 @@ export default function App() {
             <div className="header-logo">AAU</div>
             <div>
               <div className="header-title">AAU AI Assistant</div>
-              <div className="header-sub">Al Ain University · جامعة العين</div>
+              <div className="header-sub">Al Ain University</div>
             </div>
           </div>
           <button className="clear-btn" onClick={handleClear}>Clear chat</button>

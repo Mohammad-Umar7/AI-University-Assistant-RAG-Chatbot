@@ -1,15 +1,19 @@
+import hashlib
 import os
 import re
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+
+from dotenv import load_dotenv
 from fastembed import TextEmbedding
 from groq import Groq
-from dotenv import load_dotenv
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 load_dotenv()
 
-COLLECTION = "aau_knowledge_v3"
+COLLECTION = "aau_knowledge_v4"
 VECTOR_SIZE = 384
+DEFAULT_RETRIEVAL_LIMIT = 3
+DEFAULT_SCORE_THRESHOLD = 0.35
 
 SYSTEM_PROMPT = """You are a helpful assistant for Al Ain University (AAU) in the UAE. Answer questions directly using the AAU information below.
 
@@ -22,51 +26,28 @@ Assistant: AAU offers programs across several colleges:
 Contact AAU at +800-22864 for more details.
 
 EXAMPLE of a BAD response (NEVER do this):
-"Based on the provided context, AAU offers..." ← FORBIDDEN
-"According to the information, AAU has..." ← FORBIDDEN
-"The context mentions that..." ← FORBIDDEN
+"Based on the provided context, AAU offers..." FORBIDDEN
+"According to the information, AAU has..." FORBIDDEN
+"The context mentions that..." FORBIDDEN
 
 Rules:
 - Answer directly as if you work at AAU. Never reference any "context" or "information provided".
+- Answer only the user's specific question. Do not list unrelated facilities, services, or policies.
+- Keep answers concise. Use 2-5 bullets for lists unless the user asks for full details.
 - Use bullet points for lists.
 - If unsure, say: "Please contact AAU at +800-22864 or visit www.aau.ac.ae."
 
 AAU Information:
 {context}"""
 
-STRIP_PHRASES = [
-    "According to the provided context, ",
-    "According to the provided context,",
-    "According to the context, ",
-    "According to the context,",
-    "Based on the provided context, ",
-    "Based on the provided context,",
-    "Based on the context, ",
-    "Based on the context,",
-    "The context does not provide ",
-    "The context does not mention ",
-    "The context only mentions that ",
-    "The context only mentions ",
-    "The context mentions that ",
-    "The context mentions ",
-    "The context states that ",
-    "The context states ",
-    "The context ",
-    "The provided context does not ",
-    "The provided context mentions ",
-    "The provided context states ",
-    "The provided context ",
-    "the context does not provide ",
-    "the context does not mention ",
-    "the context only mentions ",
-    "the context mentions ",
-    "the context states ",
-    "the provided context ",
-]
-
 
 class RAGPipeline:
     def __init__(self):
+        self.kb_path = os.path.join(os.path.dirname(__file__), "data", "aau_knowledge_base.txt")
+        self.kb_hash = self._file_sha256(self.kb_path)
+        self.retrieval_limit = int(os.getenv("RAG_RETRIEVAL_LIMIT", DEFAULT_RETRIEVAL_LIMIT))
+        self.score_threshold = float(os.getenv("RAG_SCORE_THRESHOLD", DEFAULT_SCORE_THRESHOLD))
+
         print("Loading embedding model...")
         self.encoder = TextEmbedding("BAAI/bge-small-en-v1.5")
 
@@ -80,15 +61,24 @@ class RAGPipeline:
         self.groq = Groq(api_key=os.getenv("GROQ_API_KEY"))
         print("RAG Pipeline ready.")
 
+    def _file_sha256(self, path: str) -> str:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+
     def _init_collection(self):
         existing = [c.name for c in self.qdrant.get_collections().collections]
         needs_rebuild = COLLECTION not in existing
 
         if not needs_rebuild:
-            # Rebuild if section metadata is missing (schema upgrade)
+            # Rebuild when metadata is missing or the local knowledge base changed.
             sample = self.qdrant.scroll(COLLECTION, limit=1)[0]
-            if not sample or "section" not in sample[0].payload:
-                print("Upgrading collection schema — rebuilding...")
+            payload = sample[0].payload if sample else {}
+            if (
+                not payload
+                or "section" not in payload
+                or payload.get("kb_hash") != self.kb_hash
+            ):
+                print("Knowledge base changed or schema upgraded; rebuilding collection...")
                 self.qdrant.delete_collection(COLLECTION)
                 needs_rebuild = True
             else:
@@ -102,8 +92,7 @@ class RAGPipeline:
             self._index_documents()
 
     def _index_documents(self):
-        kb_path = os.path.join(os.path.dirname(__file__), "data", "aau_knowledge_base.txt")
-        with open(kb_path, "r", encoding="utf-8") as f:
+        with open(self.kb_path, "r", encoding="utf-8") as f:
             text = f.read()
 
         chunks, sections = self._chunk_text(text)
@@ -112,7 +101,16 @@ class RAGPipeline:
         embeddings = [e.tolist() for e in self.encoder.embed(chunks)]
 
         points = [
-            PointStruct(id=i, vector=emb, payload={"text": chunk, "section": section})
+            PointStruct(
+                id=i,
+                vector=emb,
+                payload={
+                    "text": chunk,
+                    "section": section,
+                    "chunk_id": i,
+                    "kb_hash": self.kb_hash,
+                },
+            )
             for i, (chunk, emb, section) in enumerate(zip(chunks, embeddings, sections))
         ]
         self.qdrant.upsert(collection_name=COLLECTION, points=points)
@@ -133,29 +131,52 @@ class RAGPipeline:
 
             current = ""
             for para in paragraphs:
+                if current and self._is_subsection_heading(para):
+                    chunks.append(current)
+                    section_labels.append(self._chunk_label(title, current))
+                    current = ""
+
                 candidate = (current + "\n\n" + para).strip() if current else para
                 if len(candidate) <= 700:
                     current = candidate
                 else:
                     if len(current) > 50:
                         chunks.append(current)
-                        section_labels.append(title)
+                        section_labels.append(self._chunk_label(title, current))
                     current = para
 
             if len(current) > 50:
                 chunks.append(current)
-                section_labels.append(title)
+                section_labels.append(self._chunk_label(title, current))
 
         return chunks, section_labels
 
-    def query(self, question: str, history: list = []) -> dict:
+    def _is_subsection_heading(self, paragraph: str) -> bool:
+        first_line = paragraph.splitlines()[0].strip()
+        return bool(first_line and first_line.endswith(":") and not first_line.startswith("-"))
+
+    def _chunk_label(self, section_title: str, chunk: str) -> str:
+        first_line = chunk.splitlines()[0].strip()
+        if self._is_subsection_heading(first_line):
+            return first_line.rstrip(":")
+        return section_title
+
+    def query(self, question: str, history: list | None = None) -> dict:
+        history = history or []
         q_embedding = list(self.encoder.embed([question]))[0].tolist()
 
         results = self.qdrant.search(
             collection_name=COLLECTION,
             query_vector=q_embedding,
-            limit=6,
+            limit=self.retrieval_limit,
+            score_threshold=self.score_threshold,
         )
+
+        if not results:
+            return {
+                "answer": "Please contact AAU at +800-22864 or visit www.aau.ac.ae.",
+                "sources": [],
+            }
 
         context_docs = [r.payload["text"] for r in results]
         sections = [r.payload.get("section", "") for r in results]
@@ -169,7 +190,7 @@ class RAGPipeline:
         response = self.groq.chat.completions.create(
             model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
             messages=messages,
-            max_tokens=1024,
+            max_tokens=600,
             temperature=0,
         )
 
@@ -178,11 +199,14 @@ class RAGPipeline:
         return {"answer": answer, "sources": sources}
 
     def _clean_answer(self, text: str) -> str:
-        # Nuclear option: remove any sentence that contains the word "context"
+        # Remove any sentence that exposes retrieval internals to the user.
         text = re.sub(r'[^.!?\n]*\bcontext\b[^.!?\n]*[.!?]?\s*', '', text, flags=re.IGNORECASE)
-        # Remove leftover "based on / according to" fragments
-        text = re.sub(r'(based on|according to)\s+(the\s+)?(provided\s+)?\w+[,.]?\s*', '', text, flags=re.IGNORECASE)
-        # Remove orphaned "However, it does mention that:" type fragments
+        text = re.sub(
+            r'(based on|according to)\s+(the\s+)?(provided\s+)?\w+[,.]?\s*',
+            '',
+            text,
+            flags=re.IGNORECASE,
+        )
         text = re.sub(r'However,\s+it\s+does\s+mention\s+that:?\s*', '', text, flags=re.IGNORECASE)
         text = text.strip()
         if text and text[0].islower():
