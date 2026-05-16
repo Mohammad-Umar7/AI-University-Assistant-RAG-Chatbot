@@ -24,7 +24,7 @@ export default function ChatWindow({ messages, isLoading }) {
   return (
     <div className="messages">
       {messages.map((msg, i) => (
-        <MessageBubble key={i} role={msg.role} content={msg.content} sources={msg.sources} />
+        <MessageBubble key={i} role={msg.role} content={msg.content} sources={msg.sources} isNew={msg.isNew} />
       ))}
       {isLoading && <TypingIndicator />}
       <div ref={endRef} />

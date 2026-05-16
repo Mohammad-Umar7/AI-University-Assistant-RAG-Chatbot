@@ -33,6 +33,7 @@ export default function App() {
         role: 'assistant',
         content: result.answer,
         sources: result.sources,
+        isNew: true,
       }])
       setHistory(prev => [
         ...prev,
@@ -47,6 +48,7 @@ export default function App() {
           ? "I'm still warming up. Please wait a moment and send your question again."
           : "I'm having trouble connecting right now. Please try again or contact AAU at **+800-22864**.",
         sources: [],
+        isNew: true,
       }])
     } finally {
       setIsLoading(false)
